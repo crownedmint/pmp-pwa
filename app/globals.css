@@ -119,11 +119,22 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
-    }
+  }
   body {
     @apply bg-background text-foreground;
-    }
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+  }
   html {
     @apply font-sans;
-    }
+  }
+}
+
+/* iOS PWA safe areas */
+.pwa-top-pad {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.pwa-nav {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
