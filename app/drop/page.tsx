@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useEffect, useRef, Suspense } from "react"
+import { useState, useMemo, useEffect, useRef, Suspense, useCallback } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { 
   ShoppingBag, 
@@ -8,18 +8,19 @@ import {
   X, 
   Clock, 
   Send,
-  ShieldCheck
+  ShieldCheck,
+  Loader2
 } from "lucide-react"
 import PageHeader from "@/components/page-header"
 import { 
   METAL_CONFIG, 
   CATEGORIES, 
-  SEED_CATALOG, 
   formatCurrency, 
   DropItem, 
   MetalType, 
   ItemCategory 
 } from "@/lib/catalog"
+import { useAuth } from "@/lib/useAuth"
 
 // ─── BUSINESS HOURS ─────────────────────────────────────────────────
 const OPEN_HOUR = 11 // 11 AM EST
@@ -72,9 +73,11 @@ const OVERRIDE_SIM_KEY = "pmp-drop-sim-open"
 function DropPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const { user } = useAuth()
 
   const [dropView, setDropView] = useState<"catalog" | "activity">("catalog")
   const [catalog, setCatalog] = useState<DropItem[]>([])
+  const [catalogLoading, setCatalogLoading] = useState(true)
   
   const [searchQuery, setSearchQuery] = useState("")
   const [filterMetal, setFilterMetal] = useState<MetalType | "all">("all")
@@ -116,36 +119,61 @@ function DropPageContent() {
 
   const isHoursOpen = simulateOpen || businessStatus.open
 
-  // Load catalog and active reservations
-  useEffect(() => {
+  const fetchCatalog = useCallback(async () => {
     try {
-      // 1. Catalog sync
-      const savedCatalog = localStorage.getItem(STORAGE_CATALOG_KEY)
-      if (savedCatalog) {
-        setCatalog(JSON.parse(savedCatalog))
-      } else {
-        localStorage.setItem(STORAGE_CATALOG_KEY, JSON.stringify(SEED_CATALOG))
-        setCatalog(SEED_CATALOG)
-      }
+      const res = await fetch("/api/drop")
+      const data = await res.json()
+      if (data.items) {
+        // Map database schema to catalog component expectations
+        const mappedItems: DropItem[] = data.items.map((item: any) => ({
+          id: item.id,
+          name: item.name,
+          description: item.description,
+          metal: item.metal,
+          category: item.category,
+          weightOz: item.weight,
+          karat: item.purity,
+          spotPrice: item.price || 0,
+          premiumPct: item.premium,
+          finalPrice: item.price ? item.price * (1 + item.premium / 100) : 0,
+          status: item.is_reserved ? "reserved" : "available",
+          reservedBy: item.reservedBy,
+          expiredAt: item.expiredAt,
+        }))
+        setCatalog(mappedItems)
 
-      // 2. Active Reservation check
-      const savedRes = localStorage.getItem(STORAGE_RESERVE_KEY)
-      if (savedRes) {
-        const data = JSON.parse(savedRes)
-        const expiredAt = data.expiredAt
-        const now = Date.now()
-        if (now < expiredAt) {
-          setChatItem(data.item)
-          setReserveSeconds(Math.floor((expiredAt - now) / 1000))
+        // Check if current user has an active reservation
+        if (user) {
+          const userRes = mappedItems.find(i => i.reservedBy === user.id && i.status === "reserved")
+          if (userRes && userRes.expiredAt) {
+            const exp = new Date(userRes.expiredAt).getTime()
+            const diff = Math.floor((exp - Date.now()) / 1000)
+            if (diff > 0) {
+              setChatItem(userRes)
+              setReserveSeconds(diff)
+            } else {
+              setChatItem(null)
+              setReserveSeconds(0)
+            }
+          } else {
+            setChatItem(null)
+            setReserveSeconds(0)
+          }
         } else {
-          localStorage.removeItem(STORAGE_RESERVE_KEY)
-          localStorage.removeItem(STORAGE_CHAT_KEY)
+          setChatItem(null)
+          setReserveSeconds(0)
         }
       }
-    } catch (e) {
-      console.error(e)
+    } catch (err) {
+      console.error("Failed to load catalog:", err)
+    } finally {
+      setCatalogLoading(false)
     }
-  }, [])
+  }, [user])
+
+  useEffect(() => {
+    fetchCatalog()
+  }, [fetchCatalog])
 
   // Timer countdown
   useEffect(() => {
@@ -154,9 +182,7 @@ function DropPageContent() {
         setReserveSeconds(s => {
           if (s <= 1) {
             if (timerRef.current) clearInterval(timerRef.current)
-            localStorage.removeItem(STORAGE_RESERVE_KEY)
-            localStorage.removeItem(STORAGE_CHAT_KEY)
-            setChatItem(null)
+            fetchCatalog()
             return 0
           }
           return s - 1
@@ -166,7 +192,7 @@ function DropPageContent() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current)
     }
-  }, [reserveSeconds, chatItem])
+  }, [reserveSeconds, chatItem, fetchCatalog])
 
   const formatTimer = (s: number) => {
     const m = Math.floor(s / 60)
@@ -246,8 +272,14 @@ function DropPageContent() {
       </div>
 
       {dropView === "catalog" ? (
-        // CATALOG VIEW
-        <div className="space-y-4">
+        catalogLoading ? (
+          <div className="flex flex-col items-center justify-center py-24 text-xs text-muted-foreground">
+            <Loader2 className="h-6 w-6 animate-spin text-primary mb-2" />
+            Synchronizing live catalog holdings...
+          </div>
+        ) : (
+          // CATALOG VIEW
+          <div className="space-y-4">
           
           {/* Business hours banner */}
           <div className={`rounded-xl border p-3 flex gap-2.5 items-start ${
@@ -446,6 +478,7 @@ function DropPageContent() {
           )}
 
         </div>
+      )
       ) : (
         // MY ACTIVITY VIEW
         <div className="space-y-4">

@@ -8,14 +8,15 @@ import {
   TrendingDown, 
   Clock, 
   RefreshCw,
-  AlertCircle
+  AlertCircle,
+  Loader2
 } from "lucide-react"
 import { 
   METAL_CONFIG, 
   DropItem, 
-  formatCurrency, 
-  SEED_CATALOG 
+  formatCurrency 
 } from "@/lib/catalog"
+import { useAuth } from "@/lib/useAuth"
 
 // ─── BUSINESS HOURS ─────────────────────────────────────────────────
 const OPEN_HOUR = 11 // 11 AM EST
@@ -69,9 +70,9 @@ interface PageProps {
 export default function ItemDetailPage({ params }: PageProps) {
   const router = useRouter()
   const { id } = use(params)
+  const { user } = useAuth()
 
   const [item, setItem] = useState<DropItem | null>(null)
-  const [catalog, setCatalog] = useState<DropItem[]>([])
   const [backtest, setBacktest] = useState<BacktestRow[]>([])
   const [backtestLoading, setBacktestLoading] = useState(false)
   const [backtestKey, setBacktestKey] = useState(0)
@@ -97,29 +98,40 @@ export default function ItemDetailPage({ params }: PageProps) {
 
   const isHoursOpen = simulateOpen || businessStatus.open
 
-  // Load catalog & item
-  useEffect(() => {
+  const fetchItemDetails = useCallback(async () => {
     try {
-      let currentCatalog = SEED_CATALOG
-      const saved = localStorage.getItem(STORAGE_CATALOG_KEY)
-      if (saved) {
-        currentCatalog = JSON.parse(saved)
-      } else {
-        localStorage.setItem(STORAGE_CATALOG_KEY, JSON.stringify(SEED_CATALOG))
-      }
-      setCatalog(currentCatalog)
-      
-      const found = currentCatalog.find(i => i.id === id)
-      if (found) {
-        setItem(found)
-      } else {
-        alert("Item not found.")
-        router.push("/drop")
+      const res = await fetch("/api/drop")
+      const data = await res.json()
+      if (data.items) {
+        const found = data.items.find((i: any) => i.id === id)
+        if (found) {
+          setItem({
+            id: found.id,
+            name: found.name,
+            description: found.description,
+            metal: found.metal,
+            category: found.category,
+            weightOz: parseFloat(found.weight),
+            karat: found.purity,
+            spotPrice: found.price || 0,
+            premiumPct: parseFloat(found.premium),
+            finalPrice: found.price ? found.price * (1 + found.premium / 100) : 0,
+            status: found.is_reserved ? "reserved" : "available",
+          })
+        } else {
+          alert("Item not found.")
+          router.push("/drop")
+        }
       }
     } catch (e) {
-      console.error(e)
+      console.error("Failed to fetch item specifications:", e)
     }
   }, [id, router])
+
+  // Load catalog & item
+  useEffect(() => {
+    fetchItemDetails()
+  }, [fetchItemDetails])
 
   // Run backtesting
   const runBacktest = useCallback(async (itemToTest: DropItem) => {
@@ -201,48 +213,38 @@ export default function ItemDetailPage({ params }: PageProps) {
     }
   }, [item, backtestKey, runBacktest])
 
-  const handleReserve = () => {
+  const handleReserve = async () => {
     if (!item) return
+    
+    // Check auth first
+    if (!user) {
+      alert("Authentication required! Please sign in or register using the side drawer in the header to reserve assets.")
+      return
+    }
+
     if (!isHoursOpen) {
       alert(`Reservation failed: ${businessStatus.reason}`)
       return
     }
 
-    // Check if there is already an active reservation
-    const savedRes = localStorage.getItem(STORAGE_RESERVE_KEY)
-    if (savedRes) {
-      try {
-        const parsed = JSON.parse(savedRes)
-        if (parsed.expiredAt > Date.now()) {
-          alert("You already have an active reservation! Submit payment confirmation or wait for it to expire.")
-          return
-        }
-      } catch {}
-    }
-
     if (confirm(`Reserve "${item.name}" for ${formatCurrency(item.finalPrice)}?\n\nYou will have 90 minutes to upload payment proof.`)) {
-      const expiredAt = Date.now() + 90 * 60 * 1000
-      
-      // Update catalog in localStorage
-      const updatedCatalog = catalog.map(i => i.id === item.id ? { ...i, status: "reserved" as const } : i)
-      localStorage.setItem(STORAGE_CATALOG_KEY, JSON.stringify(updatedCatalog))
-      
-      const shipping = item.finalPrice < 50000 ? 20 : 0
-      const totalDue = item.finalPrice + shipping
-      
-      const initialMsgs = [
-        { id: "sys1", sender: "system", text: "🔒 Item reserved. Your 90-minute payment window has started.", timestamp: new Date() },
-        { id: "admin1", sender: "admin", text: `Hi ${USER_PROFILE.firstName}! Thanks for reserving the ${item.name}. Let me fetch your invoice...`, timestamp: new Date() },
-        { id: "sys2", sender: "system", text: `📋 PROFILE LINKED\n\nName: ${USER_PROFILE.firstName} ${USER_PROFILE.lastName}\nEmail: ${USER_PROFILE.email}\nPhone: ${USER_PROFILE.phone}\n\n📦 Shipping:\n${USER_PROFILE.mailingAddress}`, timestamp: new Date() },
-        { id: "admin2", sender: "admin", text: `🧾 RESERVATION INVOICE\n\n🏷️ Item: ${item.name}\n💰 Spot base: ${formatCurrency(item.spotPrice)}\n📈 Premium (${item.premiumPct}%): +${formatCurrency(item.finalPrice - item.spotPrice)}\n🚚 Shipping: ${shipping === 0 ? "FREE" : "$20.00"}\n────────────────\n💵 TOTAL DUE: ${formatCurrency(totalDue)}\n────────────────`, timestamp: new Date() },
-        { id: "admin3", sender: "admin", text: `Payment Instructions:\n\n🏦 Bank Wire:\nBank: First National Bank\nRouting: 067014822\nAccount: 8845-2201-7739\nBeneficiary: Precious Metal Pro LLC\n\n📱 Zelle:\nSend to: payments@pmpro.app\n\nUpload a screenshot of your bank wire receipt or Zelle confirmation here. We'll verify and secure the metal immediately.`, timestamp: new Date() }
-      ]
+      try {
+        const res = await fetch("/api/drop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ itemId: item.id, action: "reserve" }),
+        })
 
-      localStorage.setItem(STORAGE_RESERVE_KEY, JSON.stringify({ item: { ...item, status: "reserved" }, expiredAt }))
-      localStorage.setItem(STORAGE_CHAT_KEY, JSON.stringify(initialMsgs))
+        const data = await res.json()
+        if (!res.ok) {
+          throw new Error(data.error || "Failed to secure reservation.")
+        }
 
-      alert("Reservation secured! Opening direct Admin Escrow chat...")
-      router.push("/drop/chat")
+        alert("Reservation secured! Opening direct Admin Escrow chat...")
+        router.push("/drop/chat")
+      } catch (err: unknown) {
+        alert(err instanceof Error ? err.message : "Failed to reserve item")
+      }
     }
   }
 

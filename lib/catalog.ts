@@ -14,6 +14,8 @@ export interface DropItem {
   premiumPct: number
   finalPrice: number
   status: ItemStatus
+  reservedBy?: string | null
+  expiredAt?: string | null
 }
 
 export const METAL_CONFIG: Record<MetalType, { label: string; color: string; emoji: string; apiSymbol: string }> = {

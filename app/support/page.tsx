@@ -20,7 +20,7 @@ const FAQS: FAQItem[] = [
   },
   {
     q: "Are my portfolio holdings private?",
-    a: "Yes. Your inventory logs are stored client-side in secure local storage. In a future update, you can optionally enable cloud backups which encrypt your vault data end-to-end before storing."
+    a: "Yes. Your inventory logs are stored securely in our remote vault database. Access to your custom stacked assets requires secure account authentication, and all active sessions are encrypted."
   },
   {
     q: "How are the margins calculated in the guide?",

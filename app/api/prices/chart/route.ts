@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { pool } from "@/lib/db"
+import { pricingPool } from "@/lib/db"
 
 export const dynamic = "force-dynamic"
 
@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
       ORDER BY bucket ASC
     `
 
-    const result = await pool.query(query, [symbol.toUpperCase()])
+    const result = await pricingPool.query(query, [symbol.toUpperCase()])
 
     const data = result.rows.map(
       (row: {

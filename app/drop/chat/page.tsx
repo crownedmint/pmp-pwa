@@ -1,8 +1,8 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { useRouter } from "next/navigation"
-import { ArrowLeft, Clock, Send } from "lucide-react"
+import { ArrowLeft, Clock, Send, Loader2 } from "lucide-react"
 import { METAL_CONFIG, formatCurrency, DropItem } from "@/lib/catalog"
 
 interface ChatMessage {
@@ -12,9 +12,6 @@ interface ChatMessage {
   timestamp: string | Date
 }
 
-const STORAGE_RESERVE_KEY = "pmp-active-reservation"
-const STORAGE_CHAT_KEY = "pmp-reservation-chat"
-
 export default function EscrowChatPage() {
   const router = useRouter()
   
@@ -22,44 +19,84 @@ export default function EscrowChatPage() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatInput, setChatInput] = useState("")
   const [reserveSeconds, setReserveSeconds] = useState(0)
+  const [loading, setLoading] = useState(true)
 
   const timerRef = useRef<NodeJS.Timeout | null>(null)
   const chatEndRef = useRef<HTMLDivElement | null>(null)
 
-  // Load reservation and chat history
-  useEffect(() => {
+  const fetchChatDetails = useCallback(async () => {
     try {
-      const savedRes = localStorage.getItem(STORAGE_RESERVE_KEY)
-      if (savedRes) {
-        const data = JSON.parse(savedRes)
-        const expiredAt = data.expiredAt
-        const now = Date.now()
-        
-        if (now < expiredAt) {
-          setChatItem(data.item)
-          setReserveSeconds(Math.floor((expiredAt - now) / 1000))
-          
-          const savedChat = localStorage.getItem(STORAGE_CHAT_KEY)
-          if (savedChat) {
-            setChatMessages(JSON.parse(savedChat))
-          }
+      const res = await fetch("/api/drop/chat")
+      const data = await res.json()
+      
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Failed to load escrow details")
+      }
+
+      if (data.activeItem) {
+        const item = data.activeItem
+        setChatItem({
+          id: item.id,
+          name: item.name,
+          description: item.description || "",
+          metal: item.metal,
+          category: item.category,
+          weightOz: parseFloat(item.weight || 0),
+          karat: item.purity || "",
+          spotPrice: parseFloat(item.price || 0),
+          premiumPct: parseFloat(item.premium || 0),
+          finalPrice: item.price ? item.price * (1 + item.premium / 100) : 0,
+          status: "reserved",
+        })
+
+        const exp = new Date(item.expiredAt).getTime()
+        const diff = Math.floor((exp - Date.now()) / 1000)
+        if (diff > 0) {
+          setReserveSeconds(diff)
         } else {
-          // Reservation expired
-          localStorage.removeItem(STORAGE_RESERVE_KEY)
-          localStorage.removeItem(STORAGE_CHAT_KEY)
+          setReserveSeconds(0)
           alert("Your reservation window has expired.")
           router.push("/drop")
         }
+
+        // Map messages
+        if (data.messages) {
+          const mappedMsgs: ChatMessage[] = data.messages.map((m: any) => ({
+            id: String(m.id),
+            sender: m.sender,
+            text: m.text,
+            timestamp: m.createdAt,
+          }))
+          
+          // Inject system reservation message at the beginning if not present
+          const sysMsgs: ChatMessage[] = [
+            {
+              id: "sys-init",
+              sender: "system",
+              text: `🔒 Item reserved. Your 90-minute payment window has started.\n\n🧾 RESERVATION INVOICE\n\n🏷️ Item: ${item.name}\n💰 Spot base: ${formatCurrency(parseFloat(item.price))}\n📈 Premium (${item.premium}%): +${formatCurrency(parseFloat(item.price) * (parseFloat(item.premium) / 100))}\n────────────────\n💵 TOTAL DUE: ${formatCurrency(parseFloat(item.price) * (1 + parseFloat(item.premium) / 100))}\n────────────────\n\nPayment Instructions:\n🏦 Bank Wire:\nBank: First National Bank\nRouting: 067014822\nAccount: 8845-2201-7739\nBeneficiary: Precious Metal Pro LLC\n\n📱 Zelle:\nSend to: payments@pmpro.app\n\nUpload a screenshot of your bank wire receipt or Zelle confirmation here. We'll verify and secure the metal immediately.`,
+              timestamp: item.createdAt || new Date(),
+            }
+          ]
+          
+          setChatMessages([...sysMsgs, ...mappedMsgs])
+        }
       } else {
-        // No active reservation
         alert("No active reservation found.")
         router.push("/drop")
       }
-    } catch (e) {
+    } catch (e: unknown) {
       console.error(e)
+      alert(e instanceof Error ? e.message : "Error loading escrow page")
       router.push("/drop")
+    } finally {
+      setLoading(false)
     }
   }, [router])
+
+  // Load reservation and chat history
+  useEffect(() => {
+    fetchChatDetails()
+  }, [fetchChatDetails])
 
   // Countdown timer
   useEffect(() => {
@@ -68,9 +105,6 @@ export default function EscrowChatPage() {
         setReserveSeconds(s => {
           if (s <= 1) {
             if (timerRef.current) clearInterval(timerRef.current)
-            localStorage.removeItem(STORAGE_RESERVE_KEY)
-            localStorage.removeItem(STORAGE_CHAT_KEY)
-            setChatItem(null)
             alert("Reservation window has expired.")
             router.push("/drop")
             return 0
@@ -95,40 +129,64 @@ export default function EscrowChatPage() {
     return `${m}:${sec.toString().padStart(2, "0")}`
   }
 
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     if (!chatInput.trim() || !chatItem) return
 
-    const userMsg: ChatMessage = {
-      id: `user-${Date.now()}`,
-      sender: "user",
-      text: chatInput.trim(),
-      timestamp: new Date()
-    }
-    const updated = [...chatMessages, userMsg]
-    setChatMessages(updated)
-    localStorage.setItem(STORAGE_CHAT_KEY, JSON.stringify(updated))
+    const messageText = chatInput.trim()
     setChatInput("")
 
-    // Simulated admin reply after 2 seconds
-    setTimeout(() => {
-      const replyMsg: ChatMessage = {
-        id: `admin-reply-${Date.now()}`,
-        sender: "admin",
-        text: "Confirmation received! Our operations desk is reviewing the transfer. We will send tracking details once the vault clears the shipment.",
-        timestamp: new Date()
-      }
-      setChatMessages(prev => {
-        const next = [...prev, replyMsg]
-        localStorage.setItem(STORAGE_CHAT_KEY, JSON.stringify(next))
-        return next
+    // Local optimistic update
+    const userMsg: ChatMessage = {
+      id: `temp-${Date.now()}`,
+      sender: "user",
+      text: messageText,
+      timestamp: new Date(),
+    }
+    setChatMessages(prev => [...prev, userMsg])
+
+    try {
+      const res = await fetch("/api/drop/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: messageText }),
       })
-    }, 2000)
+
+      const data = await res.json()
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Failed to deliver message")
+      }
+
+      // Replace optimistic message and append simulated admin message from database response
+      if (data.userMessage && data.adminMessage) {
+        setChatMessages(prev => {
+          const filtered = prev.filter(m => !m.id.startsWith("temp-"))
+          return [
+            ...filtered,
+            {
+              id: String(data.userMessage.id),
+              sender: data.userMessage.sender,
+              text: data.userMessage.text,
+              timestamp: data.userMessage.createdAt,
+            },
+            {
+              id: String(data.adminMessage.id),
+              sender: data.adminMessage.sender,
+              text: data.adminMessage.text,
+              timestamp: data.adminMessage.createdAt,
+            }
+          ]
+        })
+      }
+    } catch (err: unknown) {
+      console.error("Failed to send message:", err)
+      alert("Failed to deliver message. Check database connection.")
+    }
   }
 
-  if (!chatItem) {
+  if (loading || !chatItem) {
     return (
       <div className="flex h-[80vh] flex-col items-center justify-center text-xs text-muted-foreground">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent mb-2" />
+        <Loader2 className="h-6 w-6 animate-spin text-primary mb-2" />
         Checking reservation escrow status...
       </div>
     )

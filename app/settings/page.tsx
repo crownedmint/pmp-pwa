@@ -9,9 +9,11 @@ export default function SettingsPage() {
   const [theme, setTheme] = useState<"dark" | "light" | "system">("dark")
   const [cachingEnabled, setCachingEnabled] = useState(true)
 
-  const handleClearCache = () => {
-    if (confirm("Are you sure you want to clear local application data?\n\nThis will wipe your saved calculations, vault items, and active drop reservations.")) {
+  const handleClearCache = async () => {
+    if (confirm("Are you sure you want to clear local application data?\n\nThis will wipe your saved calculations, bookmarked guides, and sign you out of your secure vault session.")) {
       try {
+        // Clear server session cookie
+        await fetch("/api/auth/logout", { method: "POST" })
         localStorage.clear()
         alert("Cache cleared successfully!")
         router.push("/")

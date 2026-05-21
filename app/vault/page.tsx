@@ -12,13 +12,18 @@ import {
   Image as ImageIcon,
   CheckCircle,
   X,
-  ChevronDown
+  ChevronDown,
+  Loader2,
+  Lock,
+  Mail,
+  User
 } from "lucide-react"
 import PageHeader from "@/components/page-header"
+import { useAuth } from "@/lib/useAuth"
 
 type MetalType = "gold" | "silver" | "platinum" | "palladium"
 type CategoryType = "coin" | "bar" | "round" | "jewelry" | "scrap"
-type VaultTab = "portfolio" | "archive"
+type VaultTab = "portfolio" | "archive" | "goals"
 
 const METALS: { key: MetalType; name: string; color: string; apiSymbol: string }[] = [
   { key: "gold", name: "Gold", color: "#D4AF37", apiSymbol: "XAU" },
@@ -95,8 +100,36 @@ interface VaultItem {
 const STORAGE_KEY = "pm_pro_vault_items"
 
 export default function VaultPage() {
+  const { user, loading, refresh } = useAuth()
+
   const [tab, setTab] = useState<VaultTab>("portfolio")
   const [items, setItems] = useState<VaultItem[]>([])
+  const [loadingVault, setLoadingVault] = useState(true)
+
+  // Goals State
+  interface VaultGoal {
+    id: string
+    metal: MetalType
+    targetWeight: number
+    weightUnit: string
+    targetDate: string | null
+  }
+  const [goals, setGoals] = useState<VaultGoal[]>([])
+  const [loadingGoals, setLoadingGoals] = useState(true)
+  const [showAddGoalModal, setShowAddGoalModal] = useState(false)
+  const [gMetal, setGMetal] = useState<MetalType>("gold")
+  const [gWeight, setGWeight] = useState("")
+  const [gUnit, setGUnit] = useState("oz")
+  const [gDate, setGDate] = useState("")
+
+  // Auth Form State for Vault Page
+  const [authMode, setAuthMode] = useState<"login" | "register">("login")
+  const [authName, setAuthName] = useState("")
+  const [authEmail, setAuthEmail] = useState("")
+  const [authPassword, setAuthPassword] = useState("")
+  const [authError, setAuthError] = useState("")
+  const [submittingAuth, setSubmittingAuth] = useState(false)
+
   const [spotPrices, setSpotPrices] = useState<Record<MetalType, number>>({
     gold: 0,
     silver: 0,
@@ -133,17 +166,161 @@ export default function VaultPage() {
   const [fTargetType, setFTargetType] = useState<'percent' | 'fixed'>('percent')
   const [fTargetVal, setFTargetVal] = useState("")
 
-  // Load vault items from local storage
-  useEffect(() => {
+  // Fetch Vault Items from DB
+  const fetchVaultItems = useCallback(async () => {
+    if (!user) return
+    setLoadingVault(true)
     try {
-      const saved = localStorage.getItem(STORAGE_KEY)
-      if (saved) {
-        setItems(JSON.parse(saved))
+      const res = await fetch("/api/vault")
+      const data = await res.json()
+      if (data.items) {
+        const mapped: VaultItem[] = data.items.map((row: any) => ({
+          id: String(row.id),
+          title: row.title,
+          description: row.description || "",
+          imageUri: null,
+          metal: row.metal,
+          category: row.category,
+          weight: parseFloat(row.weight),
+          weightUnit: row.weightUnit,
+          purity: parseFloat(row.purity),
+          purchasePrice: parseFloat(row.purchasePrice),
+          purchaseDate: row.purchaseDate,
+          spotAtPurchase: parseFloat(row.purchaseSpotPrice),
+          targetGrowth: {
+            type: row.targetGrowthType || "percent",
+            value: row.targetGrowth ? parseFloat(row.targetGrowth) : 0,
+          },
+          archived: row.isArchived,
+          archivedAt: null,
+          createdAt: new Date(row.createdAt).getTime(),
+        }))
+        setItems(mapped)
       }
-    } catch (e) {
-      console.error(e)
+    } catch (err) {
+      console.error("Failed to load vault items:", err)
+    } finally {
+      setLoadingVault(false)
     }
-  }, [])
+  }, [user])
+
+  // Load vault items
+  useEffect(() => {
+    if (user) {
+      fetchVaultItems()
+    }
+  }, [user, fetchVaultItems])
+
+  const fetchVaultGoals = useCallback(async () => {
+    if (!user) return
+    setLoadingGoals(true)
+    try {
+      const res = await fetch("/api/vault/goals")
+      const data = await res.json()
+      if (data.goals) {
+        setGoals(data.goals)
+      }
+    } catch (err) {
+      console.error("Failed to load goals:", err)
+    } finally {
+      setLoadingGoals(false)
+    }
+  }, [user])
+
+  useEffect(() => {
+    if (user) {
+      fetchVaultGoals()
+    }
+  }, [user, fetchVaultGoals])
+
+  const handleAddGoal = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const weightVal = parseFloat(gWeight)
+    if (!weightVal || weightVal <= 0) return
+
+    try {
+      const res = await fetch("/api/vault/goals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          metal: gMetal,
+          targetWeight: weightVal,
+          weightUnit: gUnit,
+          targetDate: gDate || null
+        })
+      })
+
+      if (res.ok) {
+        setShowAddGoalModal(false)
+        setGWeight("")
+        setGDate("")
+        fetchVaultGoals()
+      }
+    } catch (err) {
+      console.error(err)
+    }
+  }
+
+  const handleDeleteGoal = async (id: string) => {
+    if (!confirm("Are you sure you want to delete this stacking goal?")) return
+    try {
+      const res = await fetch(`/api/vault/goals?id=${id}`, {
+        method: "DELETE"
+      })
+      if (res.ok) {
+        fetchVaultGoals()
+      }
+    } catch (err) {
+      console.error(err)
+    }
+  }
+
+  const getStackedWeightByMetal = (metal: MetalType) => {
+    return items
+      .filter(item => item.metal === metal && !item.archived)
+      .reduce((sum, item) => {
+        const unitConfig = WEIGHT_UNITS.find(u => u.key === item.weightUnit)
+        const toOzt = unitConfig ? unitConfig.toOzt : 1
+        const weightInOzt = item.weight * toOzt
+        const pureOzt = weightInOzt * item.purity
+        return sum + pureOzt
+      }, 0)
+  }
+
+  const getLivePremium = () => {
+    const weightNum = parseFloat(fWeight)
+    const priceNum = parseFloat(fPrice)
+    const spotNum = parseFloat(fSpot)
+    if (!weightNum || !priceNum || !spotNum || weightNum <= 0 || priceNum <= 0 || spotNum <= 0) {
+      return null
+    }
+
+    const unitConfig = WEIGHT_UNITS.find(u => u.key === fUnit)
+    const toOzt = unitConfig ? unitConfig.toOzt : 1
+    const weightInOzt = weightNum * toOzt
+    const pureOzt = weightInOzt * fPurity
+    const meltVal = pureOzt * spotNum
+    const premiumVal = priceNum - meltVal
+    const premiumPct = (premiumVal / meltVal) * 100
+
+    let rating = "High Premium"
+    let color = "text-red-400 bg-red-500/10 border-red-500/20"
+    if (premiumPct < 5) {
+      rating = "Low Premium (Excellent Stack)"
+      color = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+    } else if (premiumPct <= 15) {
+      rating = "Moderate Premium (Collectible / Standard)"
+      color = "text-amber-400 bg-amber-500/10 border-amber-500/20"
+    }
+
+    return {
+      meltValue: meltVal,
+      premiumValue: premiumVal,
+      premiumPercent: premiumPct,
+      rating,
+      color
+    }
+  }
 
   // Fetch current spot prices
   const fetchSpotPrices = useCallback(async () => {
@@ -245,100 +422,164 @@ export default function VaultPage() {
     }
   }
 
-  // Save vault list to localStorage
-  const saveVault = (updatedItems: VaultItem[]) => {
-    setItems(updatedItems)
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedItems))
-  }
-
   // Add Item Submit
-  const handleAddItem = () => {
+  const handleAddItem = async () => {
     if (!fTitle.trim() || !fWeight || !fPrice) {
       alert("Please fill in Title, Weight, and Purchase Price.")
       return
     }
 
-    const newItem: VaultItem = {
-      id: Date.now().toString(),
-      title: fTitle.trim(),
-      description: fDesc.trim(),
-      imageUri: fImage,
-      metal: fMetal,
-      category: fCat,
-      weight: parseFloat(fWeight) || 0,
-      weightUnit: fUnit,
-      purity: fPurity,
-      purchasePrice: parseFloat(fPrice) || 0,
-      purchaseDate: fDate || new Date().toISOString().split("T")[0],
-      spotAtPurchase: parseFloat(fSpot) || spotPrices[fMetal] || 0,
-      targetGrowth: {
-        type: fTargetType,
-        value: parseFloat(fTargetVal) || 0
-      },
-      archived: false,
-      archivedAt: null,
-      createdAt: Date.now()
-    }
+    try {
+      const res = await fetch("/api/vault", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: fTitle.trim(),
+          description: fDesc.trim(),
+          metal: fMetal,
+          category: fCat,
+          weight: parseFloat(fWeight) || 0,
+          weightUnit: fUnit,
+          purity: fPurity,
+          purchasePrice: parseFloat(fPrice) || 0,
+          purchaseSpotPrice: parseFloat(fSpot) || spotPrices[fMetal] || 0,
+          purchaseDate: fDate || new Date().toISOString().split("T")[0],
+          targetGrowth: parseFloat(fTargetVal) || 0,
+          targetGrowthType: fTargetType,
+        }),
+      })
 
-    const updated = [newItem, ...items]
-    saveVault(updated)
-    
-    // Reset Form
-    setFTitle("")
-    setFDesc("")
-    setFImage(null)
-    setFWeight("")
-    setFPrice("")
-    setFTargetVal("")
-    setShowAddModal(false)
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to add item")
+      }
+
+      await fetchVaultItems()
+      
+      // Reset Form
+      setFTitle("")
+      setFDesc("")
+      setFImage(null)
+      setFWeight("")
+      setFPrice("")
+      setFTargetVal("")
+      setShowAddModal(false)
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Failed to add vault item")
+    }
   }
 
   // Delete Vault Item
-  const handleDeleteItem = (id: string) => {
+  const handleDeleteItem = async (id: string) => {
     if (confirm("Are you sure you want to permanently delete this item?")) {
-      const updated = items.filter(i => i.id !== id)
-      saveVault(updated)
-      setShowDetailModal(false)
-      setSelectedItem(null)
+      try {
+        const res = await fetch(`/api/vault?id=${id}`, {
+          method: "DELETE",
+        })
+
+        if (!res.ok) {
+          const data = await res.json()
+          throw new Error(data.error || "Failed to delete item")
+        }
+
+        await fetchVaultItems()
+        setShowDetailModal(false)
+        setSelectedItem(null)
+      } catch (err: unknown) {
+        alert(err instanceof Error ? err.message : "Failed to delete vault item")
+      }
     }
   }
 
   // Archive / Unarchive Vault Item
-  const handleToggleArchive = (item: VaultItem) => {
-    const updated = items.map(i => {
-      if (i.id === item.id) {
-        return {
-          ...i,
-          archived: !i.archived,
-          archivedAt: !i.archived ? Date.now() : null
-        }
+  const handleToggleArchive = async (item: VaultItem) => {
+    try {
+      const res = await fetch("/api/vault", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: item.id,
+          isArchived: !item.archived,
+        }),
+      })
+
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || "Failed to archive/unarchive item")
       }
-      return i
-    })
-    saveVault(updated)
-    setShowDetailModal(false)
-    setSelectedItem(null)
+
+      await fetchVaultItems()
+      setShowDetailModal(false)
+      setSelectedItem(null)
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Failed to update item")
+    }
   }
 
   // Update target details
-  const handleSaveTarget = () => {
+  const handleSaveTarget = async () => {
     if (!selectedItem) return
-    const updated = items.map(i => {
-      if (i.id === selectedItem.id) {
-        const nextItem = {
-          ...i,
-          targetGrowth: {
-            type: editTargetType,
-            value: parseFloat(editTargetVal) || 0
-          }
-        }
-        setSelectedItem(nextItem)
-        return nextItem
+    try {
+      const res = await fetch("/api/vault", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: selectedItem.id,
+          targetGrowth: parseFloat(editTargetVal) || 0,
+          targetGrowthType: editTargetType,
+        }),
+      })
+
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || "Failed to update target details")
       }
-      return i
-    })
-    saveVault(updated)
-    setEditingTarget(false)
+
+      await fetchVaultItems()
+      
+      // Update selectedItem state in detail modal
+      setSelectedItem({
+        ...selectedItem,
+        targetGrowth: {
+          type: editTargetType,
+          value: parseFloat(editTargetVal) || 0,
+        },
+      })
+      setEditingTarget(false)
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Failed to save target")
+    }
+  }
+
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setAuthError("")
+    setSubmittingAuth(true)
+
+    try {
+      const endpoint = authMode === "login" ? "/api/auth/login" : "/api/auth/register"
+      const body = authMode === "login" 
+        ? { email: authEmail, password: authPassword }
+        : { name: authName, email: authEmail, password: authPassword }
+
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        throw new Error(data.error || "Authentication failed")
+      }
+
+      await refresh()
+    } catch (err: unknown) {
+      setAuthError(err instanceof Error ? err.message : "An unexpected error occurred")
+    } finally {
+      setSubmittingAuth(false)
+    }
   }
 
   const formatCurrency = (val: number) =>
@@ -347,6 +588,139 @@ export default function VaultPage() {
       currency: "USD",
       minimumFractionDigits: 2,
     }).format(val)
+
+  if (loading) {
+    return (
+      <div className="flex h-[80vh] flex-col items-center justify-center text-xs text-muted-foreground">
+        <Loader2 className="h-6 w-6 animate-spin text-primary mb-2" />
+        Authenticating vault ledger access...
+      </div>
+    )
+  }
+
+  if (!user) {
+    return (
+      <div className="flex flex-col px-4 pb-24 max-w-md mx-auto">
+        <PageHeader title="Secure Vault Portfolio" subtitle="Synchronized physical assets database" />
+        
+        <div className="rounded-2xl border border-border/40 bg-card/60 backdrop-blur-md p-6 mt-6 shadow-xl relative overflow-hidden">
+          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-400 via-primary to-amber-600" />
+          
+          <div className="flex justify-center mb-6 mt-2">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full border-2 border-primary bg-primary/10 text-primary">
+              <Lock className="h-8 w-8 animate-pulse" />
+            </div>
+          </div>
+
+          <h2 className="text-base font-bold text-center tracking-tight text-foreground">Unlock Vault Portfolio</h2>
+          <p className="text-xs text-muted-foreground text-center mt-1">Sign in or register below to track spot valuation, gains, and set growth alerts.</p>
+
+          {/* Tab switches */}
+          <div className="flex border-b border-border/20 mt-6 mb-5">
+            <button
+              onClick={() => { setAuthMode("login"); setAuthError(""); }}
+              className={`flex-1 pb-2.5 text-xs font-bold transition-all border-b-2 ${
+                authMode === "login" 
+                  ? "border-primary text-foreground" 
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Sign In
+            </button>
+            <button
+              onClick={() => { setAuthMode("register"); setAuthError(""); }}
+              className={`flex-1 pb-2.5 text-xs font-bold transition-all border-b-2 ${
+                authMode === "register" 
+                  ? "border-primary text-foreground" 
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Register
+            </button>
+          </div>
+
+          {authError && (
+            <div className="mb-4 rounded-lg bg-red-500/10 border border-red-500/20 p-2.5 text-[10px] font-semibold text-red-400">
+              {authError}
+            </div>
+          )}
+
+          <form onSubmit={handleAuthSubmit} className="space-y-3.5">
+            {authMode === "register" && (
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Full Name</label>
+                <div className="relative flex items-center rounded-xl border border-border/40 bg-card px-3 py-2.5 focus-within:border-primary/50">
+                  <User className="absolute left-3.5 h-4 w-4 text-muted-foreground/60" />
+                  <input
+                    type="text"
+                    required
+                    placeholder="Carlos Martinez"
+                    value={authName}
+                    onChange={(e) => setAuthName(e.target.value)}
+                    className="w-full bg-transparent pl-7 text-xs font-semibold outline-none text-foreground placeholder:text-muted-foreground/40"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Email Address</label>
+              <div className="relative flex items-center rounded-xl border border-border/40 bg-card px-3 py-2.5 focus-within:border-primary/50">
+                <Mail className="absolute left-3.5 h-4 w-4 text-muted-foreground/60" />
+                <input
+                  type="email"
+                  required
+                  placeholder="carlos@pmpro.app"
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  className="w-full bg-transparent pl-7 text-xs font-semibold outline-none text-foreground placeholder:text-muted-foreground/40"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Password</label>
+              <div className="relative flex items-center rounded-xl border border-border/40 bg-card px-3 py-2.5 focus-within:border-primary/50">
+                <Lock className="absolute left-3.5 h-4 w-4 text-muted-foreground/60" />
+                <input
+                  type="password"
+                  required
+                  placeholder="••••••••"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  className="w-full bg-transparent pl-7 text-xs font-semibold outline-none text-foreground placeholder:text-muted-foreground/40"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={submittingAuth}
+              className="w-full flex items-center justify-center gap-2 rounded-xl bg-primary py-3.5 text-xs font-black text-primary-foreground shadow-sm transition-all active:scale-[0.98] disabled:opacity-55 disabled:scale-100 mt-2"
+            >
+              {submittingAuth ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {authMode === "login" ? "Verifying..." : "Creating Account..."}
+                </>
+              ) : (
+                authMode === "login" ? "Sign In to Vault" : "Create Account"
+              )}
+            </button>
+          </form>
+        </div>
+      </div>
+    )
+  }
+
+  if (loadingVault) {
+    return (
+      <div className="flex h-[80vh] flex-col items-center justify-center text-xs text-muted-foreground">
+        <Loader2 className="h-6 w-6 animate-spin text-primary mb-2" />
+        Synchronizing vault portfolio database...
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col px-4 pb-24">
@@ -363,6 +737,16 @@ export default function VaultPage() {
           }`}
         >
           Portfolio
+        </button>
+        <button
+          onClick={() => setTab("goals")}
+          className={`flex-1 rounded-lg py-2 text-xs font-bold transition-all active:scale-[0.98] ${
+            tab === "goals"
+              ? "bg-background text-foreground shadow-xs"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Goals
         </button>
         <button
           onClick={() => setTab("archive")}
@@ -430,153 +814,315 @@ export default function VaultPage() {
         </>
       )}
 
-      {/* Filter and sorting row */}
-      <div className="space-y-2 mb-4">
-        {/* Metal Filters */}
-        <div className="flex gap-1.5 overflow-x-auto py-1 scrollbar-none">
-          <button
-            onClick={() => setFilterMetal("all")}
-            className={`rounded-lg border px-3 py-1 text-xs font-semibold whitespace-nowrap active:scale-95 ${
-              filterMetal === "all"
-                ? "border-primary bg-primary/10 text-primary"
-                : "border-border/30 bg-card/60 text-muted-foreground"
-            }`}
-          >
-            All Metals
-          </button>
-          {METALS.map((m) => (
-            <button
-              key={m.key}
-              onClick={() => setFilterMetal(m.key)}
-              className={`rounded-lg border px-3 py-1 text-xs font-semibold whitespace-nowrap active:scale-95 ${
-                filterMetal === m.key
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-border/30 bg-card/60 text-muted-foreground"
-              }`}
-            >
-              {m.name}
-            </button>
-          ))}
-        </div>
-
-        {/* Category Filters + Sorting */}
-        <div className="flex gap-1.5 items-center justify-between overflow-x-auto py-1 scrollbar-none">
-          <div className="flex gap-1.5">
-            <button
-              onClick={() => setFilterCat("all")}
-              className={`rounded-lg border px-3 py-1 text-xs font-semibold whitespace-nowrap active:scale-95 ${
-                filterCat === "all"
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-border/30 bg-card/60 text-muted-foreground"
-              }`}
-            >
-              All Types
-            </button>
-            {CATEGORIES.map((c) => (
+      {tab !== "goals" && (
+        <>
+          {/* Filter and sorting row */}
+          <div className="space-y-2 mb-4">
+            {/* Metal Filters */}
+            <div className="flex gap-1.5 overflow-x-auto py-1 scrollbar-none">
               <button
-                key={c.key}
-                onClick={() => setFilterCat(c.key)}
+                onClick={() => setFilterMetal("all")}
                 className={`rounded-lg border px-3 py-1 text-xs font-semibold whitespace-nowrap active:scale-95 ${
-                  filterCat === c.key
+                  filterMetal === "all"
                     ? "border-primary bg-primary/10 text-primary"
                     : "border-border/30 bg-card/60 text-muted-foreground"
                 }`}
               >
-                {c.label}
+                All Metals
               </button>
-            ))}
-          </div>
+              {METALS.map((m) => (
+                <button
+                  key={m.key}
+                  onClick={() => setFilterMetal(m.key)}
+                  className={`rounded-lg border px-3 py-1 text-xs font-semibold whitespace-nowrap active:scale-95 ${
+                    filterMetal === m.key
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border/30 bg-card/60 text-muted-foreground"
+                  }`}
+                >
+                  {m.name}
+                </button>
+              ))}
+            </div>
 
-          <div className="flex gap-1 items-center shrink-0 border border-border/30 rounded-lg p-0.5 bg-card/40">
-            {(["date", "value", "gain"] as const).map(s => (
-              <button
-                key={s}
-                onClick={() => setSortBy(s)}
-                className={`px-2 py-0.5 text-[9px] font-bold rounded capitalize transition-all ${
-                  sortBy === s
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground"
-                }`}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Items list */}
-      <div className="space-y-3">
-        {displayItems.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 border border-dashed border-border/40 rounded-2xl bg-card/20 text-center">
-            <p className="text-sm font-medium text-muted-foreground">No items found</p>
-            <p className="text-xs text-muted-foreground/60 mt-1">
-              {tab === "portfolio" ? "Click 'Add New Item' to start building your vault." : "No archived items."}
-            </p>
-          </div>
-        ) : (
-          displayItems.map((item) => {
-            const val = getCurrentValue(item)
-            const gain = val - item.purchasePrice
-            const pct = item.purchasePrice > 0 ? (gain / item.purchasePrice) * 100 : 0
-            const atTarget = isAtTarget(item)
-            const mConfig = METALS.find(m => m.key === item.metal)!
-            const uConfig = WEIGHT_UNITS.find(u => u.key === item.weightUnit)!
-
-            return (
-              <div
-                key={item.id}
-                onClick={() => {
-                  setSelectedItem(item)
-                  setEditTargetType(item.targetGrowth.type)
-                  setEditTargetVal(item.targetGrowth.value.toString())
-                  setEditingTarget(false)
-                  setShowDetailModal(true)
-                }}
-                className="flex items-center gap-3 rounded-xl border border-border/40 bg-card p-3 transition-all hover:border-primary/45 hover:bg-card/90 active:scale-[0.99] cursor-pointer"
-              >
-                {item.imageUri ? (
-                  <img src={item.imageUri} alt={item.title} className="h-12 w-12 rounded-lg object-cover bg-muted shrink-0" />
-                ) : (
-                  <div 
-                    className="flex h-12 w-12 items-center justify-center rounded-lg border border-border bg-background/50 text-muted-foreground shrink-0"
-                    style={{ borderColor: mConfig.color + '40' }}
+            {/* Category Filters + Sorting */}
+            <div className="flex gap-1.5 items-center justify-between overflow-x-auto py-1 scrollbar-none">
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => setFilterCat("all")}
+                  className={`rounded-lg border px-3 py-1 text-xs font-semibold whitespace-nowrap active:scale-95 ${
+                    filterCat === "all"
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border/30 bg-card/60 text-muted-foreground"
+                  }`}
+                >
+                  All Types
+                </button>
+                {CATEGORIES.map((c) => (
+                  <button
+                    key={c.key}
+                    onClick={() => setFilterCat(c.key)}
+                    className={`rounded-lg border px-3 py-1 text-xs font-semibold whitespace-nowrap active:scale-95 ${
+                      filterCat === c.key
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border/30 bg-card/60 text-muted-foreground"
+                    }`}
                   >
-                    <ImageIcon className="h-5 w-5 opacity-40" />
+                    {c.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex gap-1 items-center shrink-0 border border-border/30 rounded-lg p-0.5 bg-card/40">
+                {(["date", "value", "gain"] as const).map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setSortBy(s)}
+                    className={`px-2 py-0.5 text-[9px] font-bold rounded capitalize transition-all ${
+                      sortBy === s
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground"
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Items list */}
+          <div className="space-y-3">
+            {displayItems.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 border border-dashed border-border/40 rounded-2xl bg-card/20 text-center">
+                <p className="text-sm font-medium text-muted-foreground">No items found</p>
+                <p className="text-xs text-muted-foreground/60 mt-1">
+                  {tab === "portfolio" ? "Click 'Add New Item' to start building your vault." : "No archived items."}
+                </p>
+              </div>
+            ) : (
+              displayItems.map((item) => {
+                const val = getCurrentValue(item)
+                const gain = val - item.purchasePrice
+                const pct = item.purchasePrice > 0 ? (gain / item.purchasePrice) * 100 : 0
+                const atTarget = isAtTarget(item)
+                const mConfig = METALS.find(m => m.key === item.metal)!
+                const uConfig = WEIGHT_UNITS.find(u => u.key === item.weightUnit)!
+
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => {
+                      setSelectedItem(item)
+                      setEditTargetType(item.targetGrowth.type)
+                      setEditTargetVal(item.targetGrowth.value.toString())
+                      setEditingTarget(false)
+                      setShowDetailModal(true)
+                    }}
+                    className="flex items-center gap-3 rounded-xl border border-border/40 bg-card p-3 transition-all hover:border-primary/45 hover:bg-card/90 active:scale-[0.99] cursor-pointer"
+                  >
+                    {item.imageUri ? (
+                      <img src={item.imageUri} alt={item.title} className="h-12 w-12 rounded-lg object-cover bg-muted shrink-0" />
+                    ) : (
+                      <div 
+                        className="flex h-12 w-12 items-center justify-center rounded-lg border border-border bg-background/50 text-muted-foreground shrink-0"
+                        style={{ borderColor: mConfig.color + '40' }}
+                      >
+                        <ImageIcon className="h-5 w-5 opacity-40" />
+                      </div>
+                    )}
+                    
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <h3 className="text-sm font-bold text-foreground truncate">{item.title}</h3>
+                        {atTarget && <CheckCircle className="h-3.5 w-3.5 text-emerald-400 shrink-0" />}
+                      </div>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span 
+                          className="rounded px-1.5 py-0.5 text-[9px] font-bold text-black"
+                          style={{ backgroundColor: mConfig.color }}
+                        >
+                          {mConfig.name}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground uppercase">{item.category}</span>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground/75 mt-1 font-semibold">
+                        {item.weight} {uConfig.label} · Purity {(item.purity * 100).toFixed(1)}%
+                      </p>
+                    </div>
+
+                    <div className="text-right shrink-0">
+                      <p className="text-sm font-bold text-foreground tabular-nums">{formatCurrency(val)}</p>
+                      <p className={`text-[11px] font-semibold mt-0.5 tabular-nums ${gain >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                        {gain >= 0 ? "+" : ""}{pct.toFixed(1)}%
+                      </p>
+                      <p className="text-[9px] text-muted-foreground/60 mt-0.5">Paid {formatCurrency(item.purchasePrice)}</p>
+                    </div>
                   </div>
-                )}
-                
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <h3 className="text-sm font-bold text-foreground truncate">{item.title}</h3>
-                    {atTarget && <CheckCircle className="h-3.5 w-3.5 text-emerald-400 shrink-0" />}
-                  </div>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span 
-                      className="rounded px-1.5 py-0.5 text-[9px] font-bold text-black"
-                      style={{ backgroundColor: mConfig.color }}
+                )
+              })
+            )}
+          </div>
+        </>
+      )}
+
+      {tab === "goals" && (
+        <div className="space-y-4">
+          <div className="flex justify-between items-center mb-1">
+            <div>
+              <h3 className="text-sm font-bold text-foreground">Stacking Goals</h3>
+              <p className="text-[9px] text-muted-foreground">Monitor aggregate metal weight holdings</p>
+            </div>
+            <button
+              onClick={() => {
+                setGWeight("")
+                setGDate("")
+                setShowAddGoalModal(true)
+              }}
+              className="rounded-xl bg-primary/10 border border-primary/20 text-primary px-3 py-1.5 text-[10px] font-black uppercase active:scale-95 transition-all flex items-center gap-1"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              New Goal
+            </button>
+          </div>
+
+          {loadingGoals ? (
+            <div className="flex h-40 flex-col items-center justify-center text-xs text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin text-primary mb-1.5" />
+              Loading your stacking targets...
+            </div>
+          ) : goals.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 border border-dashed border-border/40 rounded-2xl bg-card/20 text-center">
+              <p className="text-xs font-semibold text-muted-foreground">No active stacking goals</p>
+              <p className="text-[10px] text-muted-foreground/60 mt-1">
+                Define target stack weights to track accumulation ratios.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {goals.map(goal => {
+                const currentStacked = getStackedWeightByMetal(goal.metal)
+                const pct = Math.min(100, goal.targetWeight > 0 ? (currentStacked / goal.targetWeight) * 100 : 0)
+                const mConfig = METALS.find(m => m.key === goal.metal)!
+
+                return (
+                  <div key={goal.id} className="rounded-xl border border-border/40 bg-card p-4 space-y-3 shadow-xs relative">
+                    <button
+                      onClick={() => handleDeleteGoal(goal.id)}
+                      className="absolute top-3 right-3 p-1 text-muted-foreground hover:text-red-400 active:scale-90 transition-all rounded-md"
                     >
-                      {mConfig.name}
-                    </span>
-                    <span className="text-[10px] text-muted-foreground uppercase">{item.category}</span>
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+
+                    <div className="flex items-center gap-2">
+                      <span 
+                        className="rounded px-1.5 py-0.5 text-[9px] font-black text-black capitalize"
+                        style={{ backgroundColor: mConfig.color }}
+                      >
+                        {mConfig.name}
+                      </span>
+                      <h4 className="text-xs font-bold text-foreground">Stacking Target</h4>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between text-[10px] font-bold text-muted-foreground">
+                        <span>Stacked: {currentStacked.toFixed(2)} oz</span>
+                        <span>Goal: {goal.targetWeight} {goal.weightUnit}</span>
+                      </div>
+
+                      {/* Progress Bar */}
+                      <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+                        <div 
+                          className="h-full rounded-full transition-all duration-500" 
+                          style={{ width: `${pct}%`, backgroundColor: mConfig.color }}
+                        />
+                      </div>
+
+                      <div className="flex justify-between items-center text-[9px] font-semibold text-muted-foreground/75 pt-0.5">
+                        <span>{pct.toFixed(1)}% Completed</span>
+                        {goal.targetDate && (
+                          <span>Target: {new Date(goal.targetDate).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</span>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <p className="text-[10px] text-muted-foreground/75 mt-1 font-semibold">
-                    {item.weight} {uConfig.label} · Purity {(item.purity * 100).toFixed(1)}%
-                  </p>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Add Goal Modal */}
+          {showAddGoalModal && (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs">
+              <div className="w-full max-w-sm rounded-2xl border border-border/40 bg-background p-5 animate-in zoom-in-95 duration-150">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-xs font-black uppercase tracking-wider">Set Stacking Target</h3>
+                  <button onClick={() => setShowAddGoalModal(false)} className="rounded-full p-1 text-muted-foreground hover:text-foreground">
+                    <X className="h-4.5 w-4.5" />
+                  </button>
                 </div>
 
-                <div className="text-right shrink-0">
-                  <p className="text-sm font-bold text-foreground tabular-nums">{formatCurrency(val)}</p>
-                  <p className={`text-[11px] font-semibold mt-0.5 tabular-nums ${gain >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                    {gain >= 0 ? "+" : ""}{pct.toFixed(1)}%
-                  </p>
-                  <p className="text-[9px] text-muted-foreground/60 mt-0.5">Paid {formatCurrency(item.purchasePrice)}</p>
-                </div>
+                <form onSubmit={handleAddGoal} className="space-y-3.5">
+                  <div>
+                    <label className="text-[9px] font-bold text-muted-foreground uppercase block mb-1">Precious Metal</label>
+                    <select
+                      value={gMetal}
+                      onChange={(e) => setGMetal(e.target.value as MetalType)}
+                      className="w-full rounded-xl border border-border/40 bg-card px-3 py-2.5 text-xs font-bold outline-none capitalize text-foreground"
+                    >
+                      {METALS.map(m => (
+                        <option key={m.key} value={m.key} className="bg-background capitalize">{m.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="col-span-2">
+                      <label className="text-[9px] font-bold text-muted-foreground uppercase block mb-1">Target Weight</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        required
+                        value={gWeight}
+                        onChange={(e) => setGWeight(e.target.value)}
+                        placeholder="e.g. 50"
+                        className="w-full rounded-xl border border-border/40 bg-card px-3 py-2.5 text-xs font-bold outline-none text-foreground"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-bold text-muted-foreground uppercase block mb-1">Unit</label>
+                      <select
+                        value={gUnit}
+                        onChange={(e) => setGUnit(e.target.value)}
+                        className="w-full rounded-xl border border-border/40 bg-card px-2 py-2.5 text-xs font-bold outline-none text-foreground"
+                      >
+                        <option value="oz">Ounces (oz)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[9px] font-bold text-muted-foreground uppercase block mb-1">Target Date (Optional)</label>
+                    <input
+                      type="date"
+                      value={gDate}
+                      onChange={(e) => setGDate(e.target.value)}
+                      className="w-full rounded-xl border border-border/40 bg-card px-3 py-2 text-xs font-semibold outline-none text-foreground"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full bg-primary hover:bg-primary/95 text-primary-foreground text-xs font-black py-3 rounded-xl transition-all active:scale-[0.98] shadow-sm mt-2"
+                  >
+                    Confirm Goal
+                  </button>
+                </form>
               </div>
-            )
-          })
-        )}
-      </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Floating Add Button */}
       {tab === "portfolio" && (
@@ -778,6 +1324,25 @@ export default function VaultPage() {
                 </div>
               </div>
             </div>
+
+            {(() => {
+              const premium = getLivePremium()
+              if (!premium) return null
+              return (
+                <div className={`rounded-xl border p-3.5 space-y-1 text-left mt-3.5 ${premium.color}`}>
+                  <p className="text-[9px] font-black uppercase tracking-wider">Premium Deal Analyzer</p>
+                  <div className="flex justify-between items-center text-xs font-bold mt-1">
+                    <span>Melt Value:</span>
+                    <span>${premium.meltValue.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs font-bold">
+                    <span>Premium Markup:</span>
+                    <span>{premium.premiumPercent.toFixed(2)}% (${premium.premiumValue.toFixed(2)})</span>
+                  </div>
+                  <p className="text-[10px] font-bold mt-1 uppercase tracking-wide">{premium.rating}</p>
+                </div>
+              )
+            })()}
 
             <button
               onClick={handleAddItem}

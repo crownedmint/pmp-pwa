@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { pool } from "@/lib/db"
+import { pricingPool } from "@/lib/db"
 
 export const dynamic = "force-dynamic"
 
@@ -28,7 +28,7 @@ export async function GET() {
       FROM syg_metal_prices
       ORDER BY symbol, timestamp DESC
     `
-    const latest = await pool.query(latestQuery)
+    const latest = await pricingPool.query(latestQuery)
 
     // Previous price (~ 24h ago) for daily change calc
     const prevQuery = `
@@ -40,7 +40,7 @@ export async function GET() {
       WHERE timestamp <= NOW() - INTERVAL '24 hours'
       ORDER BY symbol, timestamp DESC
     `
-    const prev = await pool.query(prevQuery)
+    const prev = await pricingPool.query(prevQuery)
 
     const prevMap = new Map<string, number>(
       prev.rows.map((r: { symbol: string; price_usd: string }) => [
