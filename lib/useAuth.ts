@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback, createContext, useContext } from "react"
+import { useState, useEffect, useCallback } from "react"
 
 export interface UserSession {
   id: string
@@ -62,9 +62,6 @@ export function useAuth() {
 
     if (globalLoading) {
       refresh()
-    } else {
-      setLoading(false)
-      setUser(globalUser)
     }
 
     return () => {
